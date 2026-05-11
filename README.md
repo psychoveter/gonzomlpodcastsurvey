@@ -164,7 +164,7 @@ be pushed to GitHub as a single project (Python pipeline at the root, SPA
 under `web/`).
 
 - `web/vite.config.js` reads `VITE_BASE` (default
-  `/gonzo-ml-podcasts-map/`) so the same code can serve from a sub-path on
+  `/gonzomlpodcastsurvey/`) so the same code can serve from a sub-path on
   GitHub Pages or from `/` for a custom domain.
 - `.github/workflows/deploy.yml` (at the **repo root**, where GitHub
   discovers it) runs on every push to `main` that touches `web/**`. It
@@ -175,9 +175,9 @@ under `web/`).
   along with code changes; CI re-deploys automatically.
 
 To publish, push to a new GitHub repo (default name
-`gonzo-ml-podcasts-map`), enable *Settings → Pages → Build and deployment →
+`gonzomlpodcastsurvey`), enable *Settings → Pages → Build and deployment →
 GitHub Actions*, and the next push to `main` will surface a URL like
-`https://<owner>.github.io/gonzo-ml-podcasts-map/`. See `web/README.md` for
+`https://<owner>.github.io/gonzomlpodcastsurvey/`. See `web/README.md` for
 the full publishing recipe.
 
 ## Known limitations

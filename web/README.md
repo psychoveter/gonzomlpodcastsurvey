@@ -1,4 +1,4 @@
-# gonzo-ml-podcasts-map — architectures SPA
+# gonzomlpodcastsurvey — architectures SPA
 
 Interactive D3 circle-packing map of architectures and techniques discussed in
 the [@gonzo_ML_podcasts](https://t.me/gonzo_ML_podcasts) Telegram channel.
@@ -23,8 +23,8 @@ npm run build       # static bundle in dist/
 npm run preview     # local preview of the build
 ```
 
-The build's `base` defaults to `/gonzo-ml-podcasts-map/` (matching the GitHub
-Pages URL `https://<owner>.github.io/gonzo-ml-podcasts-map/`). Override with
+The build's `base` defaults to `/gonzomlpodcastsurvey/` (matching the GitHub
+Pages URL `https://<owner>.github.io/gonzomlpodcastsurvey/`). Override with
 `VITE_BASE` for custom hosting:
 
 ```bash
@@ -46,9 +46,9 @@ One-time setup on the repo:
    Actions**.
 2. Push to `main` (or run the workflow manually via the *Actions* tab).
 3. The workflow logs surface the live URL,
-   `https://<owner>.github.io/gonzo-ml-podcasts-map/`.
+   `https://<owner>.github.io/gonzomlpodcastsurvey/`.
 
-If the repo name differs from `gonzo-ml-podcasts-map`, change `VITE_BASE` in
+If the repo name differs from `gonzomlpodcastsurvey`, change `VITE_BASE` in
 the workflow (and optionally in `vite.config.js` for `npm run build` without
 the env var) to `/<repo-name>/`.
 

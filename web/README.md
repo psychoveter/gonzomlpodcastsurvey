@@ -34,8 +34,11 @@ VITE_BASE=/custom/path/ npm run build  # any sub-path
 
 ## Deploy to GitHub Pages
 
-`.github/workflows/deploy.yml` builds on every push to `main` and publishes
-`dist/` via the official Pages actions.
+The workflow at the **repo root** (`../.github/workflows/deploy.yml`, since
+this SPA lives at `web/` inside the larger `gonzo` repo) builds on every push
+to `main` that touches `web/**` and publishes `web/dist/` via the official
+Pages actions. `defaults.run.working-directory: web` keeps `npm ci` /
+`npm run build` scoped to this directory.
 
 One-time setup on the repo:
 

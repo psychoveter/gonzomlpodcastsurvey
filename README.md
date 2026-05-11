@@ -159,17 +159,22 @@ stay legible without colliding on the same horizontal line.
 
 ### Publishing
 
-`web/` is structured as a standalone, GitHub-Pages-ready SPA:
+`web/` is structured as a GitHub-Pages-ready SPA. The whole repo is meant to
+be pushed to GitHub as a single project (Python pipeline at the root, SPA
+under `web/`).
 
 - `web/vite.config.js` reads `VITE_BASE` (default
   `/gonzo-ml-podcasts-map/`) so the same code can serve from a sub-path on
   GitHub Pages or from `/` for a custom domain.
-- `web/.github/workflows/deploy.yml` builds on every push to `main` and
-  publishes `dist/` via `actions/deploy-pages`.
+- `.github/workflows/deploy.yml` (at the **repo root**, where GitHub
+  discovers it) runs on every push to `main` that touches `web/**`. It
+  scopes `npm ci` / `npm run build` to `web/` via
+  `defaults.run.working-directory` and uploads `web/dist/` via
+  `actions/deploy-pages`.
 - `web/public/data.json` is the prebuilt hierarchy snapshot — commit it
   along with code changes; CI re-deploys automatically.
 
-To publish, push `web/` to a new GitHub repo (default name
+To publish, push to a new GitHub repo (default name
 `gonzo-ml-podcasts-map`), enable *Settings → Pages → Build and deployment →
 GitHub Actions*, and the next push to `main` will surface a URL like
 `https://<owner>.github.io/gonzo-ml-podcasts-map/`. See `web/README.md` for

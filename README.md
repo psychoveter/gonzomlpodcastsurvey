@@ -195,4 +195,3 @@ message at ~4096 chars, a single logical review is usually split across
 several consecutive messages (one header image + N body messages, posted in
 the same minute). The `stitch` step rebuilds those into a single thread keyed
 by the leading message id.
-# gonzomlpodcastsurvey

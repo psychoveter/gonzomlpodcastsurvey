@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+/data/*.db
+/data/*.db-journal
+/data/cache/
+/.venv/
+.env
+.env.*
+!.env.example
+/web/node_modules/
+/web/dist/

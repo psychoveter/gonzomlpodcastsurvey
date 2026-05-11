@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  background: #09090b; /* zinc-950 */
+  color: #e4e4e7;       /* zinc-200 */
+}
+
+.scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(113,113,122,0.45); /* zinc-500/45 */
+  border-radius: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover { background: rgba(113,113,122,0.7); }
+
+/* Make D3 circles slightly nicer */
+circle { vector-effect: non-scaling-stroke; }

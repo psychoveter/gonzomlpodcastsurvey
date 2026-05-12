@@ -4,20 +4,12 @@ import DetailPanel from "./DetailPanel.jsx";
 
 // A paper is considered "real" iff it points to an actual research artifact:
 // a canonical arXiv id, an arXiv URL, or a long-form review (substack/nature/etc.).
-// Channel admin, podcast announcements, link-sharing and discussion posts
-// don't pass this filter.
 function hasPaperLink(p) {
   return Boolean(p.canonical_arxiv || p.arxiv_url || p.review_url);
 }
 
-// Families that are non-paper by definition: channel news, podcast logistics,
-// industry announcements, polls, etc. Drop them entirely when the user wants
-// only research papers (even if a meta post happens to link to some arXiv id).
-const NON_PAPER_FAMILY_SLUGS = new Set(["meta"]);
-
-function filterTree(tree) {
+function applyLinkFilter(tree) {
   const families = (tree.families || [])
-    .filter((f) => !NON_PAPER_FAMILY_SLUGS.has(f.slug))
     .map((f) => {
       const clusters = (f.clusters || [])
         .map((c) => ({
@@ -31,13 +23,22 @@ function filterTree(tree) {
   return { ...tree, families };
 }
 
+function excludeFamilies(tree, excludedSlugs) {
+  if (!excludedSlugs || excludedSlugs.size === 0) return tree;
+  return {
+    ...tree,
+    families: (tree.families || []).filter((f) => !excludedSlugs.has(f.slug)),
+  };
+}
+
 export default function App() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [selection, setSelection] = useState(null);
   const [search, setSearch] = useState("");
   const [jumpId, setJumpId] = useState(null);
-  const [hideNonPaper, setHideNonPaper] = useState(true);
+  const [hasLinkFilter, setHasLinkFilter] = useState(true);
+  const [excludedFamilies, setExcludedFamilies] = useState(() => new Set());
 
   useEffect(() => {
     const base = import.meta.env.BASE_URL || "/";
@@ -50,13 +51,53 @@ export default function App() {
       .catch((e) => setErr(String(e)));
   }, []);
 
-  const displayData = useMemo(() => {
+  // tree after the link filter (used for legend counts so each family row
+  // shows how many papers would appear if you enable it).
+  const linkFiltered = useMemo(() => {
     if (!data) return null;
-    return hideNonPaper ? filterTree(data) : data;
-  }, [data, hideNonPaper]);
+    return hasLinkFilter ? applyLinkFilter(data) : data;
+  }, [data, hasLinkFilter]);
 
-  // Reset any stale selection when the filter changes and the selected paper
-  // no longer exists in the filtered view.
+  // tree after BOTH filters: link filter + family-checkbox exclusions.
+  const displayData = useMemo(() => {
+    if (!linkFiltered) return null;
+    return excludeFamilies(linkFiltered, excludedFamilies);
+  }, [linkFiltered, excludedFamilies]);
+
+  // Live counts on the visible tree.
+  const visibleCounts = useMemo(() => {
+    if (!displayData) {
+      const s = data?.stats || {};
+      return {
+        papers: s.papers_total ?? s.threads_total ?? 0,
+        clusters: s.clusters_total || 0,
+        families: s.families_total || 0,
+        crossChannel: s.papers_merged_cross_channel || 0,
+      };
+    }
+    let papers = 0;
+    let clusters = 0;
+    let crossChannel = 0;
+    for (const f of displayData.families) {
+      for (const c of f.clusters) {
+        clusters += 1;
+        for (const p of c.papers) {
+          papers += 1;
+          const chans = new Set((p.sources || []).map((s) => s.channel));
+          if (chans.size > 1) crossChannel += 1;
+        }
+      }
+    }
+    return {
+      papers,
+      clusters,
+      families: displayData.families.length,
+      crossChannel,
+    };
+  }, [displayData, data]);
+
+  // Reset any stale selection when the filter changes and the selected
+  // paper/cluster/family is no longer present.
   useEffect(() => {
     if (!displayData || !selection) return;
     if (selection.kind === "paper") {
@@ -78,8 +119,6 @@ export default function App() {
   const selectedId = selection?.id || null;
 
   function jumpTo(sel) {
-    // Translate a "jumpTo" request from the side panel into a (selection, focus)
-    // pair the CirclePack understands.
     if (!sel) return setSelection(null);
     if (sel.kind === "family") {
       setSelection({
@@ -97,6 +136,19 @@ export default function App() {
       });
       setJumpId(`cluster:${sel.family.slug}::${sel.data.slug}`);
     }
+  }
+
+  function toggleFamily(slug) {
+    setExcludedFamilies((prev) => {
+      const next = new Set(prev);
+      if (next.has(slug)) next.delete(slug);
+      else next.add(slug);
+      return next;
+    });
+  }
+  function setAllFamilies(action /* 'all' | 'none' */, candidateSlugs) {
+    if (action === "all") setExcludedFamilies(new Set());
+    else setExcludedFamilies(new Set(candidateSlugs));
   }
 
   if (err)
@@ -120,19 +172,10 @@ export default function App() {
     data.channels ||
     (data.channel ? [data.channel] : ["gonzo_ML", "gonzo_ML_podcasts"]);
   const nPapersTotal = stats.papers_total ?? stats.threads_total ?? 0;
-  const nMerged = stats.papers_merged_cross_channel || 0;
-  // Live counts on the filtered tree.
-  const nPapersShown = displayData
-    ? displayData.families.reduce(
-        (sum, f) =>
-          sum + f.clusters.reduce((s, c) => s + c.papers.length, 0),
-        0
-      )
-    : nPapersTotal;
-  const nClustersShown = displayData
-    ? displayData.families.reduce((sum, f) => sum + f.clusters.length, 0)
-    : stats.clusters_total;
-  const nFamiliesShown = displayData ? displayData.families.length : stats.families_total;
+  const nPapersShown = visibleCounts.papers;
+  const nClustersShown = visibleCounts.clusters;
+  const nFamiliesShown = visibleCounts.families;
+  const nMerged = visibleCounts.crossChannel;
 
   return (
     <div className="h-screen w-screen flex flex-col bg-zinc-950 text-zinc-200 overflow-hidden">
@@ -151,46 +194,9 @@ export default function App() {
               </a>
             </React.Fragment>
           ))}
-          <span className="text-zinc-500"> · architectures map</span>
+          <span className="text-zinc-500"> · map</span>
         </h1>
-        <div className="text-xs sm:text-sm text-zinc-500">
-          {hideNonPaper ? (
-            <>
-              <span className="text-zinc-300">{nPapersShown}</span>
-              <span className="text-zinc-600"> / {nPapersTotal}</span> papers
-            </>
-          ) : (
-            <>{nPapersShown} papers</>
-          )}
-          {nMerged ? (
-            <>
-              {" "}
-              <span
-                className="text-amber-200"
-                title="Papers discussed in both channels and merged"
-              >
-                ({nMerged} cross-channel)
-              </span>
-            </>
-          ) : null}{" "}
-          in {nClustersShown} clusters across {nFamiliesShown} families ·{" "}
-          {(stats.oldest_post || "").slice(0, 10)} —{" "}
-          {(stats.newest_post || "").slice(0, 10)} · clustered by{" "}
-          <span className="text-zinc-300">{data.generated_with || "LLM"}</span>
-        </div>
-        <div className="ml-auto flex items-center gap-3">
-          <label
-            className="flex items-center gap-1.5 text-xs text-zinc-400 cursor-pointer select-none"
-            title="Hide channel-meta and link-share posts (papers without an arXiv or substack-review link)"
-          >
-            <input
-              type="checkbox"
-              checked={hideNonPaper}
-              onChange={(e) => setHideNonPaper(e.target.checked)}
-              className="accent-cyan-500"
-            />
-            paper-only
-          </label>
+        <div className="ml-auto">
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -212,9 +218,14 @@ export default function App() {
           <div className="pointer-events-none absolute top-2 left-3 text-[11px] text-zinc-500 bg-zinc-950/60 backdrop-blur-sm rounded px-2 py-1 border border-zinc-900">
             scroll = zoom · drag = pan · click bubble = drill in · click background = reset
           </div>
-          <Legend
-            families={displayData.families}
-            onSelect={(f) => jumpTo({ kind: "family", data: f })}
+          <FilterPanel
+            families={linkFiltered?.families || []}
+            excludedFamilies={excludedFamilies}
+            onToggleFamily={toggleFamily}
+            onSetAll={setAllFamilies}
+            hasLinkFilter={hasLinkFilter}
+            onToggleLinkFilter={setHasLinkFilter}
+            onSelectFamily={(f) => jumpTo({ kind: "family", data: f })}
           />
         </div>
         <aside className="border-t lg:border-t-0 lg:border-l border-zinc-900 bg-zinc-950 p-4 overflow-auto scrollbar-thin">
@@ -222,62 +233,135 @@ export default function App() {
         </aside>
       </main>
 
-      <footer className="px-4 py-2 border-t border-zinc-900 text-xs text-zinc-500 shrink-0">
-        {stats.messages_total} raw Telegram messages → {stats.threads_total}{" "}
-        logical posts → {nPapersTotal} deduplicated papers (
-        {nPapersShown} with paper links shown) ·{" "}
-        {channels.map((c, i) => (
-          <React.Fragment key={c}>
-            {i > 0 ? " · " : ""}
-            <a
-              className="hover:text-zinc-300"
-              href={`https://t.me/${c}`}
-              target="_blank"
-              rel="noreferrer"
-            >
-              @{c}
-            </a>
-          </React.Fragment>
-        ))}{" "}
-        · classification via OpenAI {data.generated_with} (cached on disk).
+      <footer className="px-4 py-2 border-t border-zinc-900 text-xs text-zinc-500 shrink-0 flex items-baseline gap-4 flex-wrap">
+        <div>
+          {stats.messages_total} raw Telegram messages → {stats.threads_total}{" "}
+          logical posts → {nPapersTotal} deduplicated topics ·{" "}
+          {channels.map((c, i) => (
+            <React.Fragment key={c}>
+              {i > 0 ? " · " : ""}
+              <a
+                className="hover:text-zinc-300"
+                href={`https://t.me/${c}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                @{c}
+              </a>
+            </React.Fragment>
+          ))}{" "}
+          · classification via OpenAI {data.generated_with}.
+        </div>
+        <div className="ml-auto">
+          <span className="text-zinc-300">{nPapersShown}</span> posts
+          {nMerged ? (
+            <>
+              {" "}
+              <span
+                className="text-amber-200"
+                title="Posts visible above that are discussed in both channels and merged into one bubble"
+              >
+                ({nMerged} cross-channel)
+              </span>
+            </>
+          ) : null}{" "}
+          in {nClustersShown} clusters across {nFamiliesShown} families ·{" "}
+          {(stats.oldest_post || "").slice(0, 10)} —{" "}
+          {(stats.newest_post || "").slice(0, 10)}
+        </div>
       </footer>
     </div>
   );
 }
 
-function Legend({ families, onSelect }) {
+function FilterPanel({
+  families,
+  excludedFamilies,
+  onToggleFamily,
+  onSetAll,
+  hasLinkFilter,
+  onToggleLinkFilter,
+  onSelectFamily,
+}) {
   const [open, setOpen] = useState(true);
-  if (!families) return null;
-  const top = families.slice(0, 12);
+  const allSlugs = families.map((f) => f.slug);
+  const nFamiliesShown = families.filter((f) => !excludedFamilies.has(f.slug)).length;
+
   return (
-    <div className="absolute left-3 bottom-3 max-w-[260px] bg-zinc-900/80 backdrop-blur rounded-md border border-zinc-800 text-xs text-zinc-300 shadow-lg">
+    <div className="absolute left-3 bottom-3 max-w-[300px] bg-zinc-900/85 backdrop-blur rounded-md border border-zinc-800 text-xs text-zinc-300 shadow-lg">
       <button
         onClick={() => setOpen(!open)}
-        className="w-full px-2 py-1 text-left text-zinc-400 hover:text-zinc-200"
+        className="w-full px-2 py-1 text-left text-zinc-400 hover:text-zinc-200 flex items-center gap-2"
       >
-        {open ? "▾" : "▸"} top families
+        <span>{open ? "▾" : "▸"}</span>
+        <span>filters</span>
+        <span className="ml-auto text-zinc-500">
+          {nFamiliesShown}/{families.length}
+        </span>
       </button>
       {open && (
-        <ul className="px-2 pb-2 space-y-1 max-h-72 overflow-auto scrollbar-thin">
-          {top.map((f) => {
-            const n = f.clusters.reduce((s, c) => s + c.papers.length, 0);
-            return (
-              <li key={f.slug}>
-                <button
-                  onClick={() => onSelect(f)}
-                  className="w-full text-left flex items-center gap-2 hover:text-zinc-100"
-                >
+        <div className="px-2 pb-2 space-y-2">
+          <label
+            className="flex items-center gap-1.5 text-zinc-300 cursor-pointer select-none"
+            title="Hide posts that don't reference a research artifact (no arXiv id, arXiv URL, or substack-style long-form review). Posts in any family are filtered the same way."
+          >
+            <input
+              type="checkbox"
+              checked={hasLinkFilter}
+              onChange={(e) => onToggleLinkFilter(e.target.checked)}
+              className="accent-cyan-500"
+            />
+            has arxiv or substack link
+          </label>
+          <div className="flex items-baseline gap-2 text-[10px] uppercase tracking-wider text-zinc-500 pt-1 border-t border-zinc-800">
+            <span>families</span>
+            <button
+              onClick={() => onSetAll("all", allSlugs)}
+              className="hover:text-zinc-200 normal-case tracking-normal"
+            >
+              all
+            </button>
+            <span className="text-zinc-700">·</span>
+            <button
+              onClick={() => onSetAll("none", allSlugs)}
+              className="hover:text-zinc-200 normal-case tracking-normal"
+            >
+              none
+            </button>
+          </div>
+          <ul className="space-y-0.5 max-h-72 overflow-auto scrollbar-thin pr-1">
+            {families.map((f) => {
+              const n = f.clusters.reduce((s, c) => s + c.papers.length, 0);
+              const checked = !excludedFamilies.has(f.slug);
+              return (
+                <li key={f.slug} className="flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => onToggleFamily(f.slug)}
+                    className="accent-cyan-500"
+                    aria-label={`Toggle family ${f.name}`}
+                  />
                   <span
                     className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
                     style={{ background: hueFor(f.slug) }}
                   />
-                  <span className="truncate">{f.name}</span>
-                  <span className="ml-auto text-zinc-500">{n}</span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+                  <button
+                    onClick={() => onSelectFamily(f)}
+                    disabled={!checked}
+                    className={`flex-1 text-left truncate ${
+                      checked ? "hover:text-zinc-100" : "text-zinc-600"
+                    }`}
+                    title={f.name}
+                  >
+                    {f.name}
+                  </button>
+                  <span className="ml-auto text-zinc-500 tabular-nums">{n}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       )}
     </div>
   );

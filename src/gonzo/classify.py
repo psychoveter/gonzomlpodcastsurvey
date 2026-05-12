@@ -90,14 +90,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--db", required=True)
     args = p.parse_args(argv)
     conn = dbmod.connect(args.db)
-    rows = conn.execute("SELECT id, text FROM threads").fetchall()
+    rows = conn.execute("SELECT channel, first_msg_id, text FROM threads").fetchall()
     n = 0
     for r in rows:
         info = classify(r["text"] or "")
         summary = short_summary(r["text"] or "")
         conn.execute(
-            "UPDATE threads SET arch_family=?, arch_tags=?, summary=? WHERE id=?",
-            (info["arch_family"], info["arch_tags"], summary, r["id"]),
+            "UPDATE threads SET arch_family=?, arch_tags=?, summary=? "
+            "WHERE channel=? AND first_msg_id=?",
+            (info["arch_family"], info["arch_tags"], summary,
+             r["channel"], r["first_msg_id"]),
         )
         n += 1
     conn.commit()

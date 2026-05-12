@@ -204,13 +204,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--db", required=True)
     args = p.parse_args(argv)
     conn = dbmod.connect(args.db)
-    rows = conn.execute("SELECT id, text FROM threads").fetchall()
+    rows = conn.execute("SELECT channel, first_msg_id, text FROM threads").fetchall()
     n = 0
     for r in rows:
         info = enrich_thread(r["text"] or "")
         conn.execute(
             "UPDATE threads SET title=?, authors=?, arxiv_url=?, github_url=?, "
-            "review_url=?, keywords=? WHERE id=?",
+            "review_url=?, keywords=? WHERE channel=? AND first_msg_id=?",
             (
                 info["title"],
                 info["authors"],
@@ -218,7 +218,8 @@ def main(argv: list[str] | None = None) -> int:
                 info["github_url"],
                 info["review_url"],
                 info["keywords"],
-                r["id"],
+                r["channel"],
+                r["first_msg_id"],
             ),
         )
         n += 1

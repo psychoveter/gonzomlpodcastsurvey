@@ -1,19 +1,24 @@
-"""LLM-driven per-thread classification.
+"""LLM-driven classification, paper-centric.
 
-For every thread we ask the model for a single JSON object with these fields:
+We classify each *paper* (a row in the ``papers`` table) — not each individual
+thread. A paper's input is its ``merged_text``: the concatenation of all
+member-thread bodies. This way, the gonzo_ML teaser and the
+gonzo_ML_podcasts long-form review of the same paper are classified together
+and get a single consistent label.
+
+For every paper the model produces a single JSON object:
 
     family        : top-level architecture family (slug)
-    subfamily     : ≤40-char short name for the sub-family, in English
-    modalities    : list[str]   (text, vision, video, audio, action, code, math, bio, ...)
+    subfamily     : ≤40-char short label, English
+    modalities    : list[str]   (text, vision, video, audio, ...)
     training_phase: pretrain | post-train | inference | interp | theory | evaluation | other
     key_concepts  : list[str]   (3-8 short phrases)
     one_liner     : ≤30-word distinctive contribution
-    notes         : optional short remarks (e.g. "borderline, also fits X")
+    notes         : optional remark
 
-We keep the family slug aligned with the rule-based taxonomy so the LLM and
-rule classifiers are interoperable. The model is allowed to introduce a *new*
-slug only when no listed slug fits; in that case it must start with
-'other:' and be lowercase-kebab.
+Family slugs are kept aligned with the curated taxonomy when possible. The
+model is allowed to introduce a new slug (lowercase-kebab) only when no
+listed slug fits.
 """
 from __future__ import annotations
 
@@ -37,9 +42,11 @@ def _family_menu() -> str:
 
 
 SYSTEM = """\
-You classify ML/AI paper-review posts from the channel @gonzo_ML_podcasts into
-an architecture-and-methodology taxonomy. The post is written in Russian but
-quotes English terminology.
+You classify ML/AI paper-review posts from the @gonzo_ML / @gonzo_ML_podcasts
+Telegram channels into an architecture-and-methodology taxonomy. Posts are
+written in Russian but quote English terminology. The input you receive is the
+union of one or more channel posts about the same paper (a short teaser plus
+an extended long-form review, when available).
 
 Reply with a SINGLE JSON object. No prose around it. Be precise and concise.
 
@@ -65,66 +72,42 @@ Rules:
 - key_concepts must be the most distinguishing terms, not generic ones
   like "LLM" or "transformer".
 - one_liner is forward-looking and specific. Don't say "this paper studies".
-- For meta/channel-news/podcast posts, family is `meta`.
+- For meta / channel-news / podcast-about-the-channel posts, family is `meta`.
 """
 
 
-def make_user_prompt(thread: dict) -> str:
-    text = (thread.get("text") or "").strip()
-    title = (thread.get("title") or "").strip()
-    summary = (thread.get("summary") or "").strip()
-    arxiv = thread.get("arxiv_url") or ""
+def make_user_prompt(paper: dict) -> str:
+    text = (paper.get("merged_text") or "").strip()
+    title = (paper.get("title") or "").strip()
+    arxiv = paper.get("canonical_arxiv") or ""
     # Trim body to a budget. Heads (title + TL;DR) carry most signal.
     body_excerpt = text
-    if len(body_excerpt) > 4000:
-        # Keep the head (title block + TL;DR) plus the start of "Мясо"
+    if len(body_excerpt) > 6000:
+        # Keep the head plus the TL;DR / Мясо sections if present.
         head, _, rest = body_excerpt.partition("# TL;DR")
         if rest:
             tldr, _, meat = rest.partition("# Мясо")
             body_excerpt = (
                 head.strip()
                 + "\n\n# TL;DR\n"
-                + tldr[:1500]
-                + ("\n\n# Мясо\n" + meat[:1500] if meat else "")
-            )[:4000]
+                + tldr[:2500]
+                + ("\n\n# Мясо\n" + meat[:2500] if meat else "")
+            )[:6000]
         else:
-            body_excerpt = body_excerpt[:4000]
+            body_excerpt = body_excerpt[:6000]
     return (
         "FAMILY MENU (use the slug exactly):\n"
         + _family_menu()
-        + "\n\nPOST TITLE:\n"
+        + "\n\nPAPER TITLE:\n"
         + (title or "(missing)")
-        + "\n\nARXIV: "
+        + "\n\nCANONICAL ARXIV: "
         + (arxiv or "(none)")
-        + "\n\nAUTO-EXTRACTED SUMMARY:\n"
-        + (summary or "(missing)")
-        + "\n\nPOST BODY EXCERPT (truncated):\n"
+        + "\n\nMERGED POST BODY (truncated):\n"
         + body_excerpt
     )
 
 
-# ----------------------------- DB schema helpers ----------------------------
-
-EXTRA_COLS = {
-    "llm_family": "TEXT",
-    "llm_subfamily": "TEXT",
-    "llm_modalities": "TEXT",
-    "llm_training_phase": "TEXT",
-    "llm_key_concepts": "TEXT",
-    "llm_one_liner": "TEXT",
-    "llm_notes": "TEXT",
-}
-
-
-def ensure_columns(conn) -> None:
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(threads)").fetchall()}
-    for col, ty in EXTRA_COLS.items():
-        if col not in existing:
-            conn.execute(f"ALTER TABLE threads ADD COLUMN {col} {ty}")
-    conn.commit()
-
-
-# ----------------------------- main classify pass ---------------------------
+# ----------------------------- classification ------------------------------
 
 def _normalize_family(slug: str) -> str:
     s = (slug or "").strip().lower()
@@ -132,13 +115,12 @@ def _normalize_family(slug: str) -> str:
     return s
 
 
-def classify_thread(llm: LLM, thread: dict) -> dict:
+def classify_paper(llm: LLM, paper: dict) -> dict:
     obj = llm.json(
-        kind="classify_v1",
+        kind="classify_paper_v1",
         system=SYSTEM,
-        user=make_user_prompt(thread),
+        user=make_user_prompt(paper),
     )
-    # Sanitize fields
     obj["family"] = _normalize_family(obj.get("family") or "uncategorized")
     obj["subfamily"] = (obj.get("subfamily") or "").strip()[:80]
     mods = obj.get("modalities") or []
@@ -152,7 +134,7 @@ def classify_thread(llm: LLM, thread: dict) -> dict:
     obj["key_concepts"] = [str(k).strip() for k in kc][:10]
     obj["one_liner"] = (obj.get("one_liner") or "").strip()
     obj["notes"] = (obj.get("notes") or "").strip()
-    obj["id"] = thread["id"]
+    obj["id"] = paper["id"]
     return obj
 
 
@@ -166,29 +148,30 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--only-missing", action="store_true",
-        help="Only classify threads that don't yet have llm_family set",
+        help="Only classify papers that don't yet have llm_family set",
     )
     args = p.parse_args(argv)
 
     conn = dbmod.connect(args.db)
-    ensure_columns(conn)
 
-    q = "SELECT * FROM threads"
+    q = "SELECT * FROM papers"
     if args.only_missing:
         q += " WHERE llm_family IS NULL OR llm_family = ''"
     rows = [dict(r) for r in conn.execute(q).fetchall()]
     if args.limit:
         rows = rows[: args.limit]
-    print(f"classifying {len(rows)} threads with model={args.model or 'gpt-5'}",
-          file=sys.stderr)
+    print(
+        f"classifying {len(rows)} papers with model={args.model or 'gpt-5'}",
+        file=sys.stderr,
+    )
 
     llm = LLM(model=args.model)
 
-    def _one(t):
+    def _one(p):
         try:
-            return classify_thread(llm, t)
+            return classify_paper(llm, p)
         except Exception as e:
-            return {"id": t["id"], "_error": str(e)[:240]}
+            return {"id": p["id"], "_error": str(e)[:240]}
 
     results = map_concurrent(_one, rows, workers=args.workers, desc="classify")
 
@@ -200,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             n_ok += 1
             conn.execute(
-                "UPDATE threads SET llm_family=?, llm_subfamily=?, llm_modalities=?, "
+                "UPDATE papers SET llm_family=?, llm_subfamily=?, llm_modalities=?, "
                 "llm_training_phase=?, llm_key_concepts=?, llm_one_liner=?, llm_notes=? "
                 "WHERE id=?",
                 (
@@ -218,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     if n_err:
         for r in results:
             if "_error" in r:
-                print(f"  err on id={r['id']}: {r['_error']}", file=sys.stderr)
+                print(f"  err on paper id={r['id']}: {r['_error']}", file=sys.stderr)
     return 0
 
 

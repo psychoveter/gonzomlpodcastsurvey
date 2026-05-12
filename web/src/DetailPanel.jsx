@@ -1,10 +1,45 @@
 import React from "react";
 
+function channelLabel(channel) {
+  // Short label for compact links.
+  return channel === "gonzo_ML_podcasts" ? "podcast" : channel;
+}
+
+function SourceLinks({ sources, className = "" }) {
+  if (!sources || sources.length === 0) return null;
+  return (
+    <span className={`inline-flex flex-wrap gap-x-2 gap-y-1 ${className}`}>
+      {sources.map((s) => (
+        <a
+          key={`${s.channel}#${s.msg_id}`}
+          href={s.url}
+          target="_blank"
+          rel="noreferrer"
+          title={`@${s.channel} · ${(s.posted_at || "").slice(0, 10)}`}
+          className="text-zinc-400 hover:text-cyan-300 hover:underline"
+        >
+          tg:{channelLabel(s.channel)}
+        </a>
+      ))}
+    </span>
+  );
+}
+
 function PaperCard({ p }) {
+  const sources = p.sources || [];
+  const primaryUrl = sources[0]?.url || p.url;
   return (
     <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 hover:bg-zinc-900 transition-colors">
       <div className="flex items-baseline gap-2 flex-wrap text-xs text-zinc-400">
         <span>{(p.posted_at || "").slice(0, 10)}</span>
+        {sources.length > 1 ? (
+          <span
+            className="rounded bg-amber-900/40 border border-amber-700/40 text-amber-200 px-1.5 py-0.5 text-[10px] uppercase tracking-wider"
+            title="Discussed in both channels"
+          >
+            cross-channel
+          </span>
+        ) : null}
         {p.training_phase ? (
           <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wider">
             {p.training_phase}
@@ -20,7 +55,7 @@ function PaperCard({ p }) {
         ))}
       </div>
       <a
-        href={p.url}
+        href={primaryUrl}
         target="_blank"
         rel="noreferrer"
         className="block mt-1 font-medium text-zinc-100 hover:text-cyan-300 leading-snug"
@@ -46,9 +81,7 @@ function PaperCard({ p }) {
             review
           </a>
         ) : null}
-        <a href={p.url} target="_blank" rel="noreferrer" className="text-zinc-400 hover:underline">
-          telegram
-        </a>
+        <SourceLinks sources={sources} />
       </div>
       {p.key_concepts && p.key_concepts.length > 0 ? (
         <div className="mt-2 flex flex-wrap gap-1">
@@ -77,6 +110,7 @@ export default function DetailPanel({ selection, onJumpTo }) {
           <li>Inner dots are <span className="text-zinc-200">individual papers</span>; click one to open its summary and links.</li>
           <li>Click a family or cluster to zoom in. Click the background to zoom out.</li>
           <li>Use the search field to highlight matching papers/clusters.</li>
+          <li>Papers tagged <span className="text-amber-200">cross-channel</span> are discussed in both channels (teaser on <span className="text-zinc-200">@gonzo_ML</span> + extended review on <span className="text-zinc-200">@gonzo_ML_podcasts</span>) and are merged into a single bubble.</li>
         </ul>
         <p className="mt-3 text-xs text-zinc-500">
           Areas are proportional to paper count. Hover any node for a tooltip.
@@ -87,6 +121,8 @@ export default function DetailPanel({ selection, onJumpTo }) {
 
   if (selection.kind === "paper") {
     const p = selection.data;
+    const sources = p.sources || [];
+    const primaryUrl = sources[0]?.url || p.url;
     return (
       <div>
         <div className="text-xs uppercase tracking-wider text-zinc-500">
@@ -105,7 +141,7 @@ export default function DetailPanel({ selection, onJumpTo }) {
           </button>
         </div>
         <h2 className="mt-1 text-lg font-semibold text-zinc-100 leading-snug">
-          <a href={p.url} target="_blank" rel="noreferrer" className="hover:text-cyan-300">
+          <a href={primaryUrl} target="_blank" rel="noreferrer" className="hover:text-cyan-300">
             {p.title || `#${p.id}`}
           </a>
         </h2>
@@ -128,10 +164,37 @@ export default function DetailPanel({ selection, onJumpTo }) {
               long-form review
             </a>
           ) : null}
-          <a href={p.url} target="_blank" rel="noreferrer" className="text-zinc-400 hover:underline">
-            telegram post
-          </a>
         </div>
+        {sources.length > 0 ? (
+          <div className="mt-3">
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">
+              telegram source{sources.length > 1 ? "s" : ""}
+              {sources.length > 1 ? (
+                <span className="ml-2 normal-case tracking-normal text-amber-200">
+                  (cross-channel: teaser + extended review)
+                </span>
+              ) : null}
+            </div>
+            <ul className="space-y-0.5 text-sm">
+              {sources.map((s) => (
+                <li key={`${s.channel}#${s.msg_id}`}>
+                  <a
+                    href={s.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-cyan-300 hover:underline"
+                  >
+                    @{s.channel}
+                  </a>
+                  <span className="text-zinc-500 ml-2 text-xs">
+                    {(s.posted_at || "").slice(0, 10)}
+                    {" · #"}{s.msg_id}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         <div className="mt-3 flex flex-wrap gap-1">
           {p.training_phase ? (
             <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 uppercase tracking-wider">

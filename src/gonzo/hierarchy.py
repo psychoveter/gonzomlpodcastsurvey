@@ -1,19 +1,22 @@
-"""Build a hierarchical clustering of the threads using the LLM.
+"""Build a hierarchical clustering of the corpus *over papers* (not raw threads).
 
 Hierarchy levels (root → leaves):
 
   root
    └── family             (top-level architecture / methodology family)
         └── cluster       (LLM-consolidated sub-cluster of papers)
-             └── thread   (individual paper review)
+             └── paper    (deduped paper; possibly with multiple channel sources)
 
 For every internal node (families and clusters) the LLM produces a
 distinguishing description: 2-4 sentences explaining what makes this node
 distinct from its SIBLINGS at the same level.
 
-We never re-cluster across families: families come from the per-paper
+We never re-cluster across families: families come from the per-paper LLM
 classification, then within each family the LLM proposes 3-8 coherent
 sub-clusters.
+
+Each leaf paper exposes ALL of its telegram sources (gonzo_ML teaser +
+gonzo_ML_podcasts review, etc.) under ``sources``.
 """
 from __future__ import annotations
 
@@ -146,11 +149,6 @@ def _safe_slug(s: str, used: set[str]) -> str:
 
 
 def _coalesce_partition(papers: list[dict], clusters: list[dict]) -> list[dict]:
-    """Ensure that the cluster partition covers every paper exactly once.
-
-    Assigns unassigned papers to a synthetic 'misc' cluster; drops paper_ids
-    that don't belong to the family; deduplicates conflicting assignments.
-    """
     valid_ids = {p["id"] for p in papers}
     seen: set[int] = set()
     out: list[dict] = []
@@ -216,43 +214,73 @@ def describe_family(llm: LLM, fam: tax.Family, all_families: list[tax.Family],
     return (obj.get("description") or "").strip()
 
 
-def build_hierarchy(conn, llm: LLM, *, min_family_size_for_clustering: int = 3) -> dict:
-    rows = [dict(r) for r in conn.execute("SELECT * FROM threads").fetchall()]
+def _sources_for_paper(conn, paper_id: int) -> tuple[list[dict], str | None]:
+    """Return (sources, best_summary) for a paper.
+
+    Sources are the contributing thread posts (one per channel-post). The
+    summary is the longest non-empty rule-based summary among member threads
+    — usually the podcast/long-form review when both channels covered it.
+    """
+    rows = conn.execute(
+        "SELECT channel, first_msg_id, posted_at, arxiv_url, github_url, "
+        "review_url, summary "
+        "FROM threads WHERE paper_id = ? ORDER BY posted_at",
+        (paper_id,),
+    ).fetchall()
+    out: list[dict] = []
+    best_summary: str | None = None
+    for r in rows:
+        ch = r["channel"]
+        msg_id = r["first_msg_id"]
+        out.append({
+            "channel": ch,
+            "msg_id": msg_id,
+            "posted_at": r["posted_at"],
+            "url": f"https://t.me/{ch}/{msg_id}",
+            "arxiv_url": r["arxiv_url"],
+            "github_url": r["github_url"],
+            "review_url": r["review_url"],
+        })
+        s = (r["summary"] or "").strip()
+        if s and (best_summary is None or len(s) > len(best_summary)):
+            best_summary = s
+    return out, best_summary
+
+
+def build_hierarchy(conn, llm: LLM, *,
+                    min_family_size_for_clustering: int = 3) -> dict:
+    papers = [dict(r) for r in conn.execute("SELECT * FROM papers").fetchall()]
     fam_lookup = _family_lookup()
 
     by_family: dict[str, list[dict]] = defaultdict(list)
-    for r in rows:
+    for r in papers:
         f = (r.get("llm_family") or "uncategorized").strip().lower()
         by_family[f].append(r)
 
-    # Stable family order: known taxonomy first (by descending size), then unknown
     fam_order: list[str] = []
     known_slugs = {f.slug for f in tax.TAXONOMY}
     for fslug in sorted(by_family.keys(),
                         key=lambda s: (s not in known_slugs, -len(by_family[s]))):
         fam_order.append(fslug)
 
-    # 1) Cluster each family (skipping tiny ones)
     def _cluster_one(item):
-        fslug, papers = item
-        if len(papers) < min_family_size_for_clustering:
-            # One trivial cluster
+        fslug, ppl = item
+        if len(ppl) < min_family_size_for_clustering:
             return fslug, [{
                 "slug": "core",
                 "name": (fam_lookup[fslug].name if fslug in fam_lookup else fslug).strip(),
                 "distinguishing": (
-                    "Too few papers (≤2) for meaningful sub-clustering; presented as a single group."
+                    "Too few papers (≤2) for meaningful sub-clustering; "
+                    "presented as a single group."
                 ),
-                "paper_ids": [p["id"] for p in papers],
+                "paper_ids": [p["id"] for p in ppl],
             }]
-        return fslug, build_clusters_for_family(llm, fslug, papers, fam_lookup)
+        return fslug, build_clusters_for_family(llm, fslug, ppl, fam_lookup)
 
     items = [(s, by_family[s]) for s in fam_order]
     clustered = map_concurrent(_cluster_one, items, workers=6, desc="cluster")
 
-    # 2) Generate family-level distinguishing descriptions in parallel
     all_curated_families = list(tax.TAXONOMY)
-    # Add synthetic Family objects for families that aren't in our curated list
     for fslug in fam_order:
         if fslug not in fam_lookup:
             f = tax.Family(slug=fslug, name=fslug.replace("-", " ").title(),
@@ -266,8 +294,7 @@ def build_hierarchy(conn, llm: LLM, *, min_family_size_for_clustering: int = 3) 
 
     descs = dict(map_concurrent(_describe, clustered, workers=6, desc="describe"))
 
-    # 3) Assemble tree
-    threads_by_id = {r["id"]: r for r in rows}
+    papers_by_id = {r["id"]: r for r in papers}
     families_out = []
     for fslug, clusters in clustered:
         fam = fam_lookup[fslug]
@@ -275,25 +302,35 @@ def build_hierarchy(conn, llm: LLM, *, min_family_size_for_clustering: int = 3) 
         for c in clusters:
             paper_nodes = []
             for pid in c["paper_ids"]:
-                t = threads_by_id.get(pid)
+                t = papers_by_id.get(pid)
                 if not t:
                     continue
+                sources, summary = _sources_for_paper(conn, pid)
                 paper_nodes.append({
                     "id": t["id"],
                     "title": t.get("title") or "",
-                    "posted_at": t.get("posted_at"),
-                    "arxiv_url": t.get("arxiv_url"),
-                    "github_url": t.get("github_url"),
-                    "review_url": t.get("review_url"),
+                    "posted_at": t.get("earliest_posted_at"),
+                    "latest_posted_at": t.get("latest_posted_at"),
+                    "canonical_arxiv": t.get("canonical_arxiv"),
+                    "arxiv_url": next(
+                        (s["arxiv_url"] for s in sources if s["arxiv_url"]), None
+                    ),
+                    "github_url": next(
+                        (s["github_url"] for s in sources if s["github_url"]), None
+                    ),
+                    "review_url": next(
+                        (s["review_url"] for s in sources if s["review_url"]), None
+                    ),
                     "one_liner": t.get("llm_one_liner") or "",
                     "subfamily_raw": t.get("llm_subfamily") or "",
                     "modalities": [
-                        m.strip() for m in (t.get("llm_modalities") or "").split(",") if m.strip()
+                        m.strip() for m in (t.get("llm_modalities") or "").split(",")
+                        if m.strip()
                     ],
                     "training_phase": t.get("llm_training_phase") or "",
                     "key_concepts": _safe_json(t.get("llm_key_concepts")),
-                    "summary": t.get("summary") or "",
-                    "url": f"https://t.me/gonzo_ML_podcasts/{t['id']}",
+                    "summary": summary or "",
+                    "sources": sources,
                 })
             cluster_nodes.append({
                 "slug": c["slug"],
@@ -310,9 +347,11 @@ def build_hierarchy(conn, llm: LLM, *, min_family_size_for_clustering: int = 3) 
         })
 
     families_out.sort(key=lambda f: -sum(len(c["papers"]) for c in f["clusters"]))
+    channels = sorted({s["channel"] for f in families_out for c in f["clusters"]
+                        for p in c["papers"] for s in p["sources"]})
     return {
-        "channel": "gonzo_ML_podcasts",
-        "channel_url": "https://t.me/gonzo_ML_podcasts",
+        "channels": channels,
+        "channel_urls": [f"https://t.me/{c}" for c in channels],
         "generated_with": llm.model,
         "families": families_out,
     }
@@ -342,12 +381,12 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(tree, ensure_ascii=False, indent=2), encoding="utf-8")
-    # Quick stats
     n_papers = sum(len(c["papers"]) for f in tree["families"] for c in f["clusters"])
     n_clusters = sum(len(f["clusters"]) for f in tree["families"])
     print(
         f"wrote {out}  families={len(tree['families'])}  "
-        f"clusters={n_clusters}  papers={n_papers}",
+        f"clusters={n_clusters}  papers={n_papers}  "
+        f"channels={tree['channels']}",
         file=sys.stderr,
     )
     return 0

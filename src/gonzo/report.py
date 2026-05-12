@@ -17,11 +17,8 @@ from . import db as dbmod
 from .taxonomy import TAXONOMY
 
 
-CHANNEL_URL = "https://t.me/gonzo_ML_podcasts"
-
-
-def _post_url(msg_id: int) -> str:
-    return f"https://t.me/gonzo_ML_podcasts/{msg_id}"
+def _post_url(channel: str, msg_id: int) -> str:
+    return f"https://t.me/{channel}/{msg_id}"
 
 
 def _normalize_title(title: str | None, text: str) -> str:
@@ -79,7 +76,7 @@ def family_section(fam, threads: list[dict]) -> str:
     for t in threads:
         title = _normalize_title(t["title"], t["text"] or "")
         date = (t["posted_at"] or "")[:10]
-        url = _post_url(t["id"])
+        url = _post_url(t["channel"], t["first_msg_id"])
         arxiv = t["arxiv_url"]
         github = t["github_url"]
         review = t["review_url"]
@@ -90,7 +87,7 @@ def family_section(fam, threads: list[dict]) -> str:
             bits.append(f"[code]({github})")
         if review:
             bits.append(f"[review]({review})")
-        head_line = f"- **{date}** · " + "  ·  ".join(bits)
+        head_line = f"- **{date}** (@{t['channel']}) · " + "  ·  ".join(bits)
         summary = (t["summary"] or "").strip()
         if summary:
             summary_short = summary if len(summary) <= 360 else summary[:357] + "..."
@@ -103,7 +100,9 @@ def family_section(fam, threads: list[dict]) -> str:
 
 
 def build_markdown(conn) -> str:
-    rows = conn.execute("SELECT * FROM threads ORDER BY id DESC").fetchall()
+    rows = conn.execute(
+        "SELECT * FROM threads ORDER BY posted_at DESC"
+    ).fetchall()
     rows = [dict(r) for r in rows]
 
     total = len(rows)
@@ -112,21 +111,19 @@ def build_markdown(conn) -> str:
     n_arxiv = sum(1 for r in rows if r["arxiv_url"])
     n_github = sum(1 for r in rows if r["github_url"])
     n_review = sum(1 for r in rows if r["review_url"])
+    channels = sorted({r["channel"] for r in rows})
 
     by_family: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
         by_family[r["arch_family"] or "uncategorized"].append(r)
 
-    # Header
     md = []
-    md.append("# Architectures and techniques covered in `@gonzo_ML_podcasts`")
+    md.append("# Architectures and techniques covered in the gonzoML channels")
     md.append("")
+    channels_md = ", ".join(f"[`@{c}`](https://t.me/{c})" for c in channels)
     md.append(
-        f"Survey of {total} paper-review posts from the public Telegram "
-        f"channel [`@gonzo_ML_podcasts`]({CHANNEL_URL}) (period "
-        f"{oldest[:10]} – {newest[:10]}). Each post is one paper review; the "
-        f"channel started on 2024-10-22, so this covers its entire history "
-        f"so far."
+        f"Survey of {total} paper-review posts from {channels_md} "
+        f"(period {oldest[:10]} – {newest[:10]})."
     )
     md.append("")
     md.append(
@@ -182,21 +179,23 @@ def build_markdown(conn) -> str:
 
 
 def build_json(conn) -> dict:
-    rows = conn.execute("SELECT * FROM threads ORDER BY id").fetchall()
+    rows = conn.execute(
+        "SELECT * FROM threads ORDER BY channel, first_msg_id"
+    ).fetchall()
     rows = [dict(r) for r in rows]
     for r in rows:
-        r["url"] = _post_url(r["id"])
+        r["url"] = _post_url(r["channel"], r["first_msg_id"])
         r["title"] = _normalize_title(r["title"], r["text"] or "")
-        # Drop the giant raw text from JSON to keep file readable; keep summary.
         r.pop("text", None)
     families = {f.slug: {"name": f.name, "description": f.description} for f in TAXONOMY}
     families["uncategorized"] = {
         "name": "Uncategorized (niche / off-taxonomy)",
         "description": "Papers that don't match any curated family.",
     }
+    channels = sorted({r["channel"] for r in rows})
     return {
-        "channel": "gonzo_ML_podcasts",
-        "channel_url": CHANNEL_URL,
+        "channels": channels,
+        "channel_urls": [f"https://t.me/{c}" for c in channels],
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "families": families,
         "threads": rows,

@@ -25,11 +25,39 @@ def main(argv: list[str] | None = None) -> int:
     oldest = conn.execute("SELECT MIN(posted_at) FROM messages").fetchone()[0]
     newest = conn.execute("SELECT MAX(posted_at) FROM messages").fetchone()[0]
 
-    n_threads = sum(len(c["papers"]) for f in tree["families"] for c in f["clusters"])
+    n_threads_db = conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
+    n_papers_db = conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
+
+    # Per-channel message counts.
+    chan_counts = conn.execute(
+        "SELECT channel, COUNT(*) AS n, MIN(posted_at) AS old, MAX(posted_at) AS new "
+        "FROM messages GROUP BY channel ORDER BY channel"
+    ).fetchall()
+    channel_stats = [
+        {"channel": r["channel"], "messages": r["n"],
+         "oldest": r["old"], "newest": r["new"]}
+        for r in chan_counts
+    ]
+
+    # Cross-channel merges: papers covered in >=2 distinct channels.
+    n_merged_papers = conn.execute(
+        "SELECT COUNT(*) FROM (SELECT paper_id FROM threads "
+        "WHERE paper_id IS NOT NULL GROUP BY paper_id "
+        "HAVING COUNT(DISTINCT channel) > 1)"
+    ).fetchone()[0]
+    # Same-channel multi-thread groups (e.g. two separate posts about one paper).
+    n_intra_channel_dupes = conn.execute(
+        "SELECT COUNT(*) FROM (SELECT paper_id FROM threads "
+        "WHERE paper_id IS NOT NULL GROUP BY paper_id "
+        "HAVING COUNT(*) > COUNT(DISTINCT channel) AND COUNT(DISTINCT channel) = 1)"
+    ).fetchone()[0]
+
+    n_papers_tree = sum(
+        len(c["papers"]) for f in tree["families"] for c in f["clusters"]
+    )
     n_clusters = sum(len(f["clusters"]) for f in tree["families"])
     n_families = len(tree["families"])
 
-    # Modality histogram across all papers
     mod_counts: Counter = Counter()
     phase_counts: Counter = Counter()
     for f in tree["families"]:
@@ -45,13 +73,18 @@ def main(argv: list[str] | None = None) -> int:
         **tree,
         "stats": {
             "messages_total": n_msgs,
-            "threads_total": n_threads,
+            "threads_total": n_threads_db,
+            "papers_total": n_papers_db,
+            "papers_in_tree": n_papers_tree,
+            "papers_merged_cross_channel": n_merged_papers,
+            "papers_intra_channel_dupes": n_intra_channel_dupes,
             "clusters_total": n_clusters,
             "families_total": n_families,
             "oldest_post": oldest,
             "newest_post": newest,
             "modality_histogram": mod_counts.most_common(),
             "phase_histogram": phase_counts.most_common(),
+            "channel_stats": channel_stats,
             "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         },
     }
@@ -60,7 +93,9 @@ def main(argv: list[str] | None = None) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     print(
-        f"wrote {out_path}  families={n_families}  clusters={n_clusters}  papers={n_threads}",
+        f"wrote {out_path}  families={n_families}  clusters={n_clusters}  "
+        f"papers_tree={n_papers_tree}  papers_db={n_papers_db}  "
+        f"merged={n_merged_papers}",
         file=sys.stderr,
     )
     return 0

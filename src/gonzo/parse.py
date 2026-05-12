@@ -23,8 +23,14 @@ def _text_with_breaks(tag: Tag) -> str:
     return tag.get_text("", strip=False)
 
 
-def parse_page(html: str, *, fetched_at: str | None = None) -> list[dict]:
-    """Return a list of message dicts ready to insert into messages/links."""
+def parse_page(html: str, *, fetched_at: str | None = None,
+               channel: str | None = None) -> list[dict]:
+    """Return a list of message dicts ready to insert into messages/links.
+
+    ``channel``, if provided, is included as ``msg["channel"]`` for downstream
+    convenience; it does not affect parsing (the channel is also encoded in
+    the ``data-post`` attribute of each ``.tgme_widget_message``).
+    """
     fetched_at = fetched_at or datetime.now(timezone.utc).isoformat()
     soup = BeautifulSoup(html, "html.parser")
     out: list[dict] = []
@@ -100,25 +106,23 @@ def parse_page(html: str, *, fetched_at: str | None = None) -> list[dict]:
                 }
             )
 
-        out.append(
-            {
-                "msg": {
-                    "id": msg_id,
-                    "posted_at": posted_at,
-                    "views": views,
-                    "html": body_html,
-                    "text": body_text,
-                    "has_photo": has_photo,
-                    "has_video": has_video,
-                    "has_document": has_document,
-                    "has_link_preview": has_link_preview,
-                    "reply_to_id": reply_to_id,
-                    "forwarded_from": forwarded_from,
-                    "fetched_at": fetched_at,
-                },
-                "links": links,
-            }
-        )
+        msg_dict = {
+            "id": msg_id,
+            "posted_at": posted_at,
+            "views": views,
+            "html": body_html,
+            "text": body_text,
+            "has_photo": has_photo,
+            "has_video": has_video,
+            "has_document": has_document,
+            "has_link_preview": has_link_preview,
+            "reply_to_id": reply_to_id,
+            "forwarded_from": forwarded_from,
+            "fetched_at": fetched_at,
+        }
+        if channel is not None:
+            msg_dict["channel"] = channel
+        out.append({"msg": msg_dict, "links": links})
 
     return out
 

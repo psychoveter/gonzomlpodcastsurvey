@@ -31,6 +31,59 @@ function excludeFamilies(tree, excludedSlugs) {
   };
 }
 
+// Each paper has `posted_at` (earliest Telegram posting across channels).
+// We compare ISO strings as `YYYY-MM-DD`, which sorts correctly lexicographically.
+function paperDate(p) {
+  return (p.posted_at || p.latest_posted_at || "").slice(0, 10);
+}
+
+function applyDateFilter(tree, from, to) {
+  if (!from && !to) return tree;
+  const families = (tree.families || [])
+    .map((f) => {
+      const clusters = (f.clusters || [])
+        .map((c) => ({
+          ...c,
+          papers: (c.papers || []).filter((p) => {
+            const d = paperDate(p);
+            if (!d) return false;
+            if (from && d < from) return false;
+            if (to && d > to) return false;
+            return true;
+          }),
+        }))
+        .filter((c) => c.papers.length > 0);
+      return { ...f, clusters };
+    })
+    .filter((f) => f.clusters.length > 0);
+  return { ...tree, families };
+}
+
+function computeDateBounds(tree) {
+  let min = null;
+  let max = null;
+  for (const f of tree?.families || []) {
+    for (const c of f.clusters || []) {
+      for (const p of c.papers || []) {
+        const d = paperDate(p);
+        if (!d) continue;
+        if (min === null || d < min) min = d;
+        if (max === null || d > max) max = d;
+      }
+    }
+  }
+  return { min, max };
+}
+
+// Subtract `months` months from an ISO `YYYY-MM-DD` string.
+function isoMinusMonths(iso, months) {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-").map((x) => Number(x));
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCMonth(dt.getUTCMonth() - months);
+  return dt.toISOString().slice(0, 10);
+}
+
 export default function App() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
@@ -39,6 +92,8 @@ export default function App() {
   const [jumpId, setJumpId] = useState(null);
   const [hasLinkFilter, setHasLinkFilter] = useState(true);
   const [excludedFamilies, setExcludedFamilies] = useState(() => new Set());
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
 
   useEffect(() => {
     const base = import.meta.env.BASE_URL || "/";
@@ -58,11 +113,23 @@ export default function App() {
     return hasLinkFilter ? applyLinkFilter(data) : data;
   }, [data, hasLinkFilter]);
 
-  // tree after BOTH filters: link filter + family-checkbox exclusions.
-  const displayData = useMemo(() => {
+  // Date bounds are computed on the link-filtered tree so they always reflect
+  // the candidate set the date filter is operating over.
+  const dateBounds = useMemo(
+    () => computeDateBounds(linkFiltered || data),
+    [linkFiltered, data]
+  );
+
+  const dateFiltered = useMemo(() => {
     if (!linkFiltered) return null;
-    return excludeFamilies(linkFiltered, excludedFamilies);
-  }, [linkFiltered, excludedFamilies]);
+    return applyDateFilter(linkFiltered, dateFrom, dateTo);
+  }, [linkFiltered, dateFrom, dateTo]);
+
+  // tree after ALL filters: link filter + date filter + family-checkbox exclusions.
+  const displayData = useMemo(() => {
+    if (!dateFiltered) return null;
+    return excludeFamilies(dateFiltered, excludedFamilies);
+  }, [dateFiltered, excludedFamilies]);
 
   // Live counts on the visible tree.
   const visibleCounts = useMemo(() => {
@@ -219,13 +286,19 @@ export default function App() {
             scroll = zoom · drag = pan · click bubble = drill in · click background = reset
           </div>
           <FilterPanel
-            families={linkFiltered?.families || []}
+            families={dateFiltered?.families || []}
             excludedFamilies={excludedFamilies}
             onToggleFamily={toggleFamily}
             onSetAll={setAllFamilies}
             hasLinkFilter={hasLinkFilter}
             onToggleLinkFilter={setHasLinkFilter}
             onSelectFamily={(f) => jumpTo({ kind: "family", data: f })}
+            dateFrom={dateFrom}
+            dateTo={dateTo}
+            dateMin={dateBounds.min || ""}
+            dateMax={dateBounds.max || ""}
+            onSetDateFrom={setDateFrom}
+            onSetDateTo={setDateTo}
           />
         </div>
         <aside className="border-t lg:border-t-0 lg:border-l border-zinc-900 bg-zinc-950 p-4 overflow-auto scrollbar-thin">
@@ -282,10 +355,30 @@ function FilterPanel({
   hasLinkFilter,
   onToggleLinkFilter,
   onSelectFamily,
+  dateFrom,
+  dateTo,
+  dateMin,
+  dateMax,
+  onSetDateFrom,
+  onSetDateTo,
 }) {
   const [open, setOpen] = useState(true);
   const allSlugs = families.map((f) => f.slug);
   const nFamiliesShown = families.filter((f) => !excludedFamilies.has(f.slug)).length;
+  const dateActive = Boolean(dateFrom || dateTo);
+
+  // Pin presets to the latest data point so "last 6 months" stays meaningful
+  // even after the dataset is refreshed.
+  function applyPreset(months) {
+    if (!dateMax) return;
+    if (months == null) {
+      onSetDateFrom("");
+      onSetDateTo("");
+      return;
+    }
+    onSetDateFrom(isoMinusMonths(dateMax, months));
+    onSetDateTo("");
+  }
 
   return (
     <div className="absolute left-3 bottom-3 max-w-[300px] bg-zinc-900/85 backdrop-blur rounded-md border border-zinc-800 text-xs text-zinc-300 shadow-lg">
@@ -313,6 +406,64 @@ function FilterPanel({
             />
             has arxiv or substack link
           </label>
+
+          <div className="pt-1 border-t border-zinc-800 space-y-1">
+            <div className="flex items-baseline gap-2 text-[10px] uppercase tracking-wider text-zinc-500">
+              <span>posted</span>
+              <span className="normal-case tracking-normal text-zinc-600">
+                {dateMin?.slice(0, 7) || "—"} … {dateMax?.slice(0, 7) || "—"}
+              </span>
+              {dateActive ? (
+                <button
+                  onClick={() => applyPreset(null)}
+                  className="ml-auto hover:text-zinc-200 normal-case tracking-normal"
+                  title="Clear date filter"
+                >
+                  reset
+                </button>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-1">
+              <input
+                type="date"
+                value={dateFrom}
+                min={dateMin || undefined}
+                max={dateMax || undefined}
+                onChange={(e) => onSetDateFrom(e.target.value)}
+                className="flex-1 min-w-0 rounded bg-zinc-950 border border-zinc-800 px-1.5 py-0.5 text-zinc-200 text-[11px] focus:outline-none focus:border-zinc-600"
+                aria-label="From date"
+              />
+              <span className="text-zinc-600">→</span>
+              <input
+                type="date"
+                value={dateTo}
+                min={dateMin || undefined}
+                max={dateMax || undefined}
+                onChange={(e) => onSetDateTo(e.target.value)}
+                className="flex-1 min-w-0 rounded bg-zinc-950 border border-zinc-800 px-1.5 py-0.5 text-zinc-200 text-[11px] focus:outline-none focus:border-zinc-600"
+                aria-label="To date"
+              />
+            </div>
+            <div className="flex items-center gap-1 text-[10px] text-zinc-500">
+              <span>preset:</span>
+              {[
+                { label: "1m", months: 1 },
+                { label: "3m", months: 3 },
+                { label: "6m", months: 6 },
+                { label: "1y", months: 12 },
+                { label: "all", months: null },
+              ].map((p) => (
+                <button
+                  key={p.label}
+                  onClick={() => applyPreset(p.months)}
+                  className="px-1.5 py-0.5 rounded border border-zinc-800 hover:border-zinc-600 hover:text-zinc-200 normal-case"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="flex items-baseline gap-2 text-[10px] uppercase tracking-wider text-zinc-500 pt-1 border-t border-zinc-800">
             <span>families</span>
             <button

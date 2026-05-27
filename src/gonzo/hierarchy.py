@@ -265,20 +265,30 @@ def build_hierarchy(conn, llm: LLM, *,
 
     def _cluster_one(item):
         fslug, ppl = item
+        fallback = [{
+            "slug": "core",
+            "name": (fam_lookup[fslug].name if fslug in fam_lookup else fslug).strip(),
+            "distinguishing": (
+                "Too few papers (≤2) for meaningful sub-clustering; "
+                "presented as a single group."
+            ),
+            "paper_ids": [p["id"] for p in ppl],
+        }]
         if len(ppl) < min_family_size_for_clustering:
-            return fslug, [{
-                "slug": "core",
-                "name": (fam_lookup[fslug].name if fslug in fam_lookup else fslug).strip(),
-                "distinguishing": (
-                    "Too few papers (≤2) for meaningful sub-clustering; "
-                    "presented as a single group."
-                ),
-                "paper_ids": [p["id"] for p in ppl],
-            }]
-        return fslug, build_clusters_for_family(llm, fslug, ppl, fam_lookup)
+            return fslug, fallback
+        try:
+            return fslug, build_clusters_for_family(llm, fslug, ppl, fam_lookup)
+        except Exception as e:
+            print(f"[cluster] WARN {fslug}: {e!r}; falling back to single 'core' cluster",
+                  file=sys.stderr)
+            return fslug, fallback
 
     items = [(s, by_family[s]) for s in fam_order]
-    clustered = map_concurrent(_cluster_one, items, workers=6, desc="cluster")
+    clustered_raw = map_concurrent(_cluster_one, items, workers=6, desc="cluster")
+    # map_concurrent stores {"_error": ...} for tasks whose top-level result
+    # raised. Drop those — _cluster_one already catches LLM failures, so any
+    # leftover error means the family is broken beyond use.
+    clustered = [r for r in clustered_raw if isinstance(r, tuple) and len(r) == 2]
 
     all_curated_families = list(tax.TAXONOMY)
     for fslug in fam_order:
@@ -290,9 +300,18 @@ def build_hierarchy(conn, llm: LLM, *,
 
     def _describe(item):
         fslug, clusters = item
-        return fslug, describe_family(llm, fam_lookup[fslug], all_curated_families, clusters)
+        try:
+            return fslug, describe_family(
+                llm, fam_lookup[fslug], all_curated_families, clusters
+            )
+        except Exception as e:
+            print(f"[describe] WARN {fslug}: {e!r}; using curated description as fallback",
+                  file=sys.stderr)
+            fam = fam_lookup.get(fslug)
+            return fslug, (fam.description if fam else "")
 
-    descs = dict(map_concurrent(_describe, clustered, workers=6, desc="describe"))
+    descs_raw = map_concurrent(_describe, clustered, workers=6, desc="describe")
+    descs = dict(r for r in descs_raw if isinstance(r, tuple) and len(r) == 2)
 
     papers_by_id = {r["id"]: r for r in papers}
     families_out = []
